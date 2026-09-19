@@ -32,6 +32,16 @@ GZ3D.WebXRView = function(scene)
   this.availableRoles = [];
   this.hiddenRole = null;
   this.hiddenRoleWasVisible = true;
+  this.supports = {vr: false, ar: false};
+  this.sessionMode = null;
+  this.mapScene = null;
+  this.mapRoot = null;
+  this.mapMarkers = [];
+  this.mapScale = 0;
+  this.mapPlaced = false;
+  this.hitTestSource = null;
+  this.previousClearColor = null;
+  this.previousClearAlpha = 1;
 
   this.roles = [
     {
@@ -61,6 +71,11 @@ GZ3D.WebXRView = function(scene)
       link: 'base_link',
       contains: 'rover_front_camera',
       pose: [0, 0, 0, 0, 0, 0]
+    },
+    {
+      name: 'map-ar',
+      label: 'Tabletop map (AR)',
+      isMap: true
     }
   ];
 
@@ -237,15 +252,34 @@ GZ3D.WebXRView.prototype._createControls = function()
     this._setStatus('WebXR needs Quest Browser on localhost or HTTPS.');
     return;
   }
-  navigator.xr.isSessionSupported('immersive-vr').then(function(supported)
+  ['immersive-vr', 'immersive-ar'].forEach(function(mode)
   {
-    that.button.disabled = !supported;
-    that._setStatus(supported ? 'Choose a role, then enter VR.' :
-        'Immersive VR is unavailable in this browser.');
-  }, function()
-  {
-    that._setStatus('Could not check WebXR support.');
+    navigator.xr.isSessionSupported(mode).then(function(supported)
+    {
+      that.supports[mode === 'immersive-ar' ? 'ar' : 'vr'] = supported;
+      that._updateModeButton();
+    }, function()
+    {
+      that._updateModeButton();
+    });
   });
+};
+
+GZ3D.WebXRView.prototype._updateModeButton = function()
+{
+  if (this.session)
+  {
+    return;
+  }
+  var isMap = this.activeRole && this.activeRole.isMap;
+  this.button.textContent = isMap ? 'Enter AR map' : 'Enter VR';
+  this.button.disabled = !this.activeRole ||
+      !this.supports[isMap ? 'ar' : 'vr'];
+  this._setStatus(this.button.disabled ?
+      (isMap ? 'Immersive AR is unavailable in this browser.' :
+          'Immersive VR is unavailable in this browser.') :
+      (isMap ? 'Point at a table, then use the trigger to place the map.' :
+          'Choose a role, then enter VR.'));
 };
 
 GZ3D.WebXRView.prototype._createHud = function()
@@ -302,7 +336,8 @@ GZ3D.WebXRView.prototype._refreshRoles = function()
   var available = [];
   for (var i = 0; i < this.roles.length; ++i)
   {
-    if (this.scene.getByName(this.roles[i].name))
+    if (this.roles[i].isMap ? this.scene.heightmap :
+        this.scene.getByName(this.roles[i].name))
     {
       available.push(this.roles[i]);
     }
@@ -329,10 +364,10 @@ GZ3D.WebXRView.prototype._refreshRoles = function()
   {
     var option = document.createElement('option');
     option.value = available[j].name;
-    option.textContent = available[j].name;
+    option.textContent = available[j].label || available[j].name;
     this.select.appendChild(option);
   }
-  this.select.disabled = available.length === 0;
+  this.select.disabled = !!this.session || available.length === 0;
 
   var retained = this.activeRole && available.some(function(role)
   {
@@ -352,6 +387,7 @@ GZ3D.WebXRView.prototype._refreshRoles = function()
     this.activeRole = null;
     this.activeAnchor = null;
     this._setStatus('Waiting for simulated vehicles...');
+    this._updateModeButton();
   }
 };
 
@@ -371,15 +407,26 @@ GZ3D.WebXRView.prototype._selectRole = function(name)
   {
     if (this.availableRoles[i].name === name)
     {
+      if (this.session && !!this.availableRoles[i].isMap !==
+          (this.sessionMode === 'immersive-ar'))
+      {
+        return;
+      }
       this.activeRole = this.availableRoles[i];
       var root = this.scene.getByName(this.activeRole.name);
-      this.activeAnchor = GZ3D.WebXRView.findAnchor(
-          root, this.activeRole);
-      this.sensorMatrix.copy(this._poseMatrix(this.activeRole.pose));
+      this.activeAnchor = this.activeRole.isMap ? null :
+          GZ3D.WebXRView.findAnchor(root, this.activeRole);
+      if (!this.activeRole.isMap)
+      {
+        this.sensorMatrix.copy(this._poseMatrix(this.activeRole.pose));
+      }
       this.baseViewerInverse = null;
       this.select.value = name;
-      this._drawHud(name);
-      this._setStatus('Selected ' + name + ' (read only).');
+      if (!this.activeRole.isMap)
+      {
+        this._drawHud(name);
+      }
+      this._updateModeButton();
       this._hideActiveRole();
       return;
     }
@@ -388,23 +435,26 @@ GZ3D.WebXRView.prototype._selectRole = function(name)
 
 GZ3D.WebXRView.prototype._cycleRole = function(step)
 {
-  if (!this.availableRoles.length)
+  var roles = this.availableRoles.filter(function(role)
+  {
+    return !role.isMap;
+  });
+  if (!roles.length)
   {
     return;
   }
   var index = 0;
-  for (var i = 0; i < this.availableRoles.length; ++i)
+  for (var i = 0; i < roles.length; ++i)
   {
     if (this.activeRole &&
-        this.availableRoles[i].name === this.activeRole.name)
+        roles[i].name === this.activeRole.name)
     {
       index = i;
       break;
     }
   }
-  index = (index + step + this.availableRoles.length) %
-      this.availableRoles.length;
-  this._selectRole(this.availableRoles[index].name);
+  index = (index + step + roles.length) % roles.length;
+  this._selectRole(roles[index].name);
 };
 
 GZ3D.WebXRView.prototype.start = function()
@@ -414,17 +464,21 @@ GZ3D.WebXRView.prototype.start = function()
     return;
   }
   var that = this;
+  var isMap = !!this.activeRole.isMap;
   this.button.disabled = true;
-  this._setStatus('Starting immersive view...');
-  navigator.xr.requestSession('immersive-vr', {
-    requiredFeatures: ['local-floor']
+  this._setStatus(isMap ? 'Starting tabletop map...' :
+      'Starting immersive view...');
+  navigator.xr.requestSession(isMap ? 'immersive-ar' : 'immersive-vr', {
+    requiredFeatures: ['local-floor'],
+    optionalFeatures: isMap ? ['hit-test'] : []
   }).then(function(session)
   {
     that._beginSession(session);
   }, function(error)
   {
     that.button.disabled = false;
-    that._setStatus('Could not enter VR: ' + error.message);
+    that._setStatus('Could not enter ' + (isMap ? 'AR map' : 'VR') +
+        ': ' + error.message);
   });
 };
 
@@ -432,6 +486,7 @@ GZ3D.WebXRView.prototype._beginSession = function(session)
 {
   var that = this;
   this.session = session;
+  this.sessionMode = this.activeRole.isMap ? 'immersive-ar' : 'immersive-vr';
   session.addEventListener('end', function()
   {
     that._endSession();
@@ -439,7 +494,7 @@ GZ3D.WebXRView.prototype._beginSession = function(session)
   this.gl.makeXRCompatible().then(function()
   {
     that.layer = new window.XRWebGLLayer(session, that.gl, {
-      alpha: false,
+      alpha: that.sessionMode === 'immersive-ar',
       antialias: true
     });
     session.updateRenderState({
@@ -454,14 +509,53 @@ GZ3D.WebXRView.prototype._beginSession = function(session)
     that.previousSize = that.renderer.getSize();
     that.previousPixelRatio = that.renderer.getPixelRatio();
     that._resizeForLayer();
-    that._hideActiveRole();
-    that.hud.visible = true;
-    that.button.textContent = 'Exit VR';
+    if (that.sessionMode === 'immersive-ar')
+    {
+      that._prepareMap();
+      that.previousClearColor = that.renderer.getClearColor().clone();
+      that.previousClearAlpha = that.renderer.getClearAlpha();
+      that.renderer.setClearColor(0x000000, 0);
+      if (session.requestHitTestSource)
+      {
+        session.requestReferenceSpace('viewer').then(function(space)
+        {
+          return session.requestHitTestSource({space: space});
+        }).then(function(source)
+        {
+          if (that.session === session)
+          {
+            that.hitTestSource = source;
+          }
+          else
+          {
+            source.cancel();
+          }
+        }, function() {});
+      }
+    }
+    else
+    {
+      that._hideActiveRole();
+      that.hud.visible = true;
+    }
+    that.select.disabled = true;
+    that.button.textContent = that.sessionMode === 'immersive-ar' ?
+        'Exit AR map' : 'Exit VR';
     that.button.disabled = false;
-    that._setStatus('Immersive read-only view active.');
+    that._setStatus(that.sessionMode === 'immersive-ar' ?
+        'Point at a table and press a trigger to place the map.' :
+        'Immersive read-only view active.');
     session.addEventListener('select', function(event)
     {
-      that._cycleRole(event.inputSource.handedness === 'left' ? -1 : 1);
+      if (that.sessionMode === 'immersive-ar')
+      {
+        that.mapPlaced = true;
+        that._setStatus('Tabletop map placed.');
+      }
+      else
+      {
+        that._cycleRole(event.inputSource.handedness === 'left' ? -1 : 1);
+      }
     });
     session.requestAnimationFrame(function(time, frame)
     {
@@ -489,6 +583,105 @@ GZ3D.WebXRView.prototype._resizeForLayer = function()
   this.framebufferHeight = this.layer.framebufferHeight;
   this.renderer.setDrawingBufferSize(
       this.framebufferWidth, this.framebufferHeight, 1);
+};
+
+/* Reuse gzweb's loaded terrain mesh; markers read the same live model poses. */
+GZ3D.WebXRView.prototype._prepareMap = function()
+{
+  if (!this.scene.heightmap)
+  {
+    throw new Error('Terrain is still loading');
+  }
+  this.mapScene = new THREE.Scene();
+  this.mapRoot = new THREE.Group();
+  this.mapScene.add(this.mapRoot);
+  this.mapPlaced = false;
+  var extent = 6500;
+  this.scene.heightmap.traverse(function(object)
+  {
+    if (object.geometry && object.geometry.parameters &&
+        object.geometry.parameters.width)
+    {
+      extent = object.geometry.parameters.width;
+    }
+  });
+  this.mapScale = 1.3 / extent;
+
+  var terrain = this.scene.heightmap.clone(true);
+  terrain.rotation.x = -Math.PI / 2;
+  terrain.scale.set(this.mapScale, this.mapScale, this.mapScale * 3);
+  this.mapRoot.add(terrain);
+  var base = new THREE.Mesh(new THREE.PlaneGeometry(1.32, 1.32),
+      new THREE.MeshBasicMaterial({
+        color: 0x10232d, transparent: true, opacity: 0.8,
+        side: THREE.DoubleSide
+      }));
+  base.rotation.x = -Math.PI / 2;
+  base.position.y = -0.015;
+  this.mapRoot.add(base);
+
+  var roles = [
+    ['quadcopter', 0x57d38c], ['fixed-wing', 0x57d38c],
+    ['tower-1', 0x5bc8e0], ['tower-2', 0x5bc8e0],
+    ['target_vessel', 0xffcc00]
+  ];
+  this.mapMarkers = [];
+  for (var i = 0; i < roles.length; ++i)
+  {
+    var marker = new THREE.Group();
+    var stem = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.003, 0.003, 0.12, 6),
+        new THREE.MeshBasicMaterial({color: roles[i][1]}));
+    stem.position.y = 0.06;
+    marker.add(stem);
+    var dot = new THREE.Mesh(new THREE.SphereGeometry(0.023, 10, 8),
+        new THREE.MeshBasicMaterial({color: roles[i][1]}));
+    dot.position.y = 0.12;
+    marker.add(dot);
+    var canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'rgba(10,17,20,0.9)';
+    ctx.fillRect(0, 0, 256, 64);
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 27px sans-serif';
+    ctx.fillText(roles[i][0].replace('target_', ''), 128, 43, 245);
+    var label = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(canvas), transparent: true,
+      depthTest: false
+    }));
+    label.scale.set(0.26, 0.065, 1);
+    label.position.y = 0.16;
+    marker.add(label);
+    marker.visible = false;
+    this.mapRoot.add(marker);
+    this.mapMarkers.push({name: roles[i][0], object: marker});
+  }
+};
+
+GZ3D.WebXRView.mapPosition = function(world, scale)
+{
+  return new THREE.Vector3(world.x * scale,
+      world.z * scale * 3, -world.y * scale);
+};
+
+GZ3D.WebXRView.prototype._updateMapMarkers = function()
+{
+  var world = new THREE.Vector3();
+  for (var i = 0; i < this.mapMarkers.length; ++i)
+  {
+    var marker = this.mapMarkers[i];
+    var model = this.scene.getByName(marker.name);
+    marker.object.visible = !!model;
+    if (model)
+    {
+      model.getWorldPosition(world);
+      marker.object.position.copy(
+          GZ3D.WebXRView.mapPosition(world, this.mapScale));
+    }
+  }
 };
 
 GZ3D.WebXRView.prototype._ensureEyeCameras = function(count)
@@ -525,6 +718,66 @@ GZ3D.WebXRView.prototype._applyView = function(camera, view, viewport,
       viewport.height / this.layer.framebufferHeight);
 };
 
+GZ3D.WebXRView.prototype._onARFrame = function(frame, pose)
+{
+  this._resizeForLayer();
+  this._ensureEyeCameras(pose.views.length);
+  if (!this.mapPlaced)
+  {
+    var position = null;
+    if (this.hitTestSource && frame.getHitTestResults)
+    {
+      var hits = frame.getHitTestResults(this.hitTestSource);
+      if (hits.length)
+      {
+        var hitPose = hits[0].getPose(this.referenceSpace);
+        if (hitPose)
+        {
+          position = hitPose.transform.position;
+        }
+      }
+    }
+    if (position)
+    {
+      this.mapRoot.position.set(position.x, position.y + 0.02, position.z);
+    }
+    else
+    {
+      this.viewerMatrix.fromArray(pose.transform.matrix);
+      this.mapRoot.position.set(0, -0.55, -1.2)
+          .applyMatrix4(this.viewerMatrix);
+    }
+  }
+
+  this.scene.scene.updateMatrixWorld(true);
+  this._updateMapMarkers();
+  this.mapScene.updateMatrixWorld(true);
+  for (var i = 0; i < pose.views.length; ++i)
+  {
+    var view = pose.views[i];
+    var camera = this.eyeCameras[i];
+    var viewport = this.layer.getViewport(view);
+    camera.matrix.fromArray(view.transform.matrix);
+    camera.matrixWorld.copy(camera.matrix);
+    camera.matrixWorldInverse.getInverse(camera.matrixWorld);
+    camera.projectionMatrix.fromArray(view.projectionMatrix);
+    camera.bounds.set(
+        viewport.x / this.layer.framebufferWidth,
+        viewport.y / this.layer.framebufferHeight,
+        viewport.width / this.layer.framebufferWidth,
+        viewport.height / this.layer.framebufferHeight);
+  }
+  this.arrayCamera.matrix.fromArray(pose.transform.matrix);
+  this.arrayCamera.matrixWorld.copy(this.arrayCamera.matrix);
+  this.arrayCamera.matrixWorldInverse.getInverse(this.arrayCamera.matrixWorld);
+  this.arrayCamera.projectionMatrix.copy(
+      this.eyeCameras[0].projectionMatrix);
+  this.renderer.setRenderTarget(null);
+  this.renderer.setScissorTest(false);
+  this.renderer.clear(true, true, true);
+  this.renderer.render(this.mapScene, this.arrayCamera);
+};
+
 GZ3D.WebXRView.prototype._onXRFrame = function(time, frame)
 {
   if (!this.session || frame.session !== this.session)
@@ -539,6 +792,11 @@ GZ3D.WebXRView.prototype._onXRFrame = function(time, frame)
   var pose = frame.getViewerPose(this.referenceSpace);
   if (!pose || !this.activeRole)
   {
+    return;
+  }
+  if (this.sessionMode === 'immersive-ar')
+  {
+    this._onARFrame(frame, pose);
     return;
   }
   var root = this.scene.getByName(this.activeRole.name);
@@ -593,7 +851,19 @@ GZ3D.WebXRView.prototype._onXRFrame = function(time, frame)
 GZ3D.WebXRView.prototype._endSession = function()
 {
   this._restoreHiddenRole();
+  if (this.hitTestSource)
+  {
+    this.hitTestSource.cancel();
+    this.hitTestSource = null;
+  }
+  if (this.previousClearColor)
+  {
+    this.renderer.setClearColor(
+        this.previousClearColor, this.previousClearAlpha);
+    this.previousClearColor = null;
+  }
   this.session = null;
+  this.sessionMode = null;
   this.referenceSpace = null;
   this.layer = null;
   this.baseViewerInverse = null;
@@ -608,8 +878,8 @@ GZ3D.WebXRView.prototype._endSession = function()
   }
   this.framebufferWidth = 0;
   this.framebufferHeight = 0;
-  this.button.textContent = 'Enter VR';
-  this.button.disabled = false;
+  this.select.disabled = this.availableRoles.length === 0;
+  this._updateModeButton();
   this.scene.setSize(window.innerWidth, window.innerHeight);
   this._setStatus('Exited immersive view.');
 };

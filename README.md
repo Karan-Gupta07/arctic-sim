@@ -42,6 +42,12 @@ vehicle with a slight downward pitch and hides that vehicle locally to prevent
 near-plane clipping. Tower views hide only the camera head, leaving the mast
 visible below; these visibility changes never affect Gazebo or other clients.
 
+Select **Tabletop map (AR)** and **Enter AR map** for a passthrough view of the
+live terrain. Aim the headset at a table and press a controller trigger to
+place it. The map shows live pointers for the drones, towers, and target vessel.
+If the browser cannot provide a surface hit, the map starts in front of you
+and the trigger fixes it there.
+
 WebXR requires a secure context. For a tethered Quest development check, keep
 USB connected and run:
 

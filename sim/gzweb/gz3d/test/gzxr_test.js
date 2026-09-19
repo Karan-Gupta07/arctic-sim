@@ -11,6 +11,15 @@ describe('WebXR view adapter', function() {
     expect(forward).toEqual(new THREE.Vector3(1, 0, 0));
   });
 
+  it('places live map markers over the matching terrain coordinates',
+      function() {
+    var p = GZ3D.WebXRView.mapPosition(
+        new THREE.Vector3(100, 200, 30), 0.001);
+    expect(p.x).toBeCloseTo(0.1, 6);
+    expect(p.y).toBeCloseTo(0.09, 6);
+    expect(p.z).toBeCloseTo(-0.2, 6);
+  });
+
   it('finds the scoped camera link without selecting a sibling', function() {
     var root = new THREE.Object3D();
     var sibling = new THREE.Object3D();
