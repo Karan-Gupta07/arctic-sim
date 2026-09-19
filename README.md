@@ -23,9 +23,36 @@ docker compose up --build
 
 | | |
 |---|---|
-| Browser view | <http://localhost:8080> |
+| Browser / immersive view | <http://localhost:8080> |
 | Control panel | injected into the browser view; API on `127.0.0.1:8090` |
 | Fleet check | `./mavcheck` |
+
+### Read-only immersive view
+
+The gzweb page can render its existing live 3D scene directly in WebXR. This is
+stereoscopic scene rendering, not a flat camera stream: headset rotation and
+small local movements have depth and parallax while the selected simulated
+vehicle carries the viewer through the world. Headset input is never published
+back to Gazebo or MAVLink.
+
+Choose an available role in the **Immersive view** bar and select **Enter VR**.
+Inside VR, the right trigger selects the next available role and the left
+trigger selects the previous one. The quadcopter view starts just above the
+vehicle with a slight downward pitch and hides that vehicle locally to prevent
+near-plane clipping. Tower views hide only the camera head, leaving the mast
+visible below; these visibility changes never affect Gazebo or other clients.
+
+WebXR requires a secure context. For a tethered Quest development check, keep
+USB connected and run:
+
+```bash
+adb reverse tcp:8080 tcp:8080
+```
+
+Then open `http://localhost:8080` in Quest Browser; loopback is treated as a
+secure context. For untethered use, terminate trusted HTTPS/WSS in front of the
+same gzweb origin. The client follows the page scheme for WebSocket, model, and
+material requests, so an HTTPS page does not fall back to mixed-content URLs.
 
 Each asset is its own container with its own IP, and answers MAVLink on
 ArduPilot's stock ports at that address. The host-side ports are strided only

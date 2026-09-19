@@ -9,7 +9,7 @@ GZ3D.GZIface = function(scene, url)
 {
   this.emitter = globalEmitter || new EventEmitter2({verboseMemoryLeak: true});
   this.scene = scene;
-  this.url = url || (location.hostname + ':' + location.port);
+  this.url = url || location.host;
 
   this.isConnected = false;
 
@@ -30,7 +30,7 @@ GZ3D.GZIface = function(scene, url)
 GZ3D.GZIface.prototype.connect = function()
 {
   this.webSocket = new ROSLIB.Ros({
-    url : 'ws://' + this.url
+    url : (location.protocol === 'https:' ? 'wss://' : 'ws://') + this.url
   });
 
   var that = this;
@@ -994,7 +994,7 @@ GZ3D.GZIface.prototype.createGeom = function(geom, material, parent)
         var materialName = parent.name + '::' + modelUri;
         this.entityMaterial[materialName] = mat;
 
-        modelUri = 'http://' + this.url + '/' + modelUri;
+        modelUri = location.protocol + '//' + this.url + '/' + modelUri;
 
         this.scene.loadMeshFromUri(modelUri, submesh, centerSubmesh,
           function(mesh) {
@@ -1124,7 +1124,7 @@ GZ3D.GZIface.prototype.parseMaterial = function(material)
     return null;
   }
 
-  var uriPath = 'http://' + this.url + '/assets';
+  var uriPath = location.protocol + '//' + this.url + '/assets';
   var texture;
   var normalMap;
   var textureUri;
