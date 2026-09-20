@@ -36,17 +36,22 @@ vehicle carries the viewer through the world. Headset input is never published
 back to Gazebo or MAVLink.
 
 Choose an available role in the **Immersive view** bar and select **Enter VR**.
-Inside VR, the right trigger selects the next available role and the left
-trigger selects the previous one. The quadcopter view starts just above the
+On Quest, the right trigger switches between VR and the AR map without leaving
+the immersive session. In VR, the left trigger selects the next asset view.
+The quadcopter view starts just above the
 vehicle with a slight downward pitch and hides that vehicle locally to prevent
 near-plane clipping. Tower views hide only the camera head, leaving the mast
 visible below; these visibility changes never affect Gazebo or other clients.
 
 Select **Tabletop map (AR)** and **Enter AR map** for a passthrough view of the
-live terrain. Aim the headset at a table and press a controller trigger to
-place it. The map shows live pointers for the drones, towers, and target vessel.
-If the browser cannot provide a surface hit, the map starts in front of you
-and the trigger fixes it there.
+live terrain. Aim at a table and press the left trigger to place it; press left
+again to move it. The controller rays show where you are pointing. Aim the
+right ray at a colored pin and press the right trigger to open that asset's
+viewpoint. Press right again to return to the map. A right trigger away from
+the pins opens the last selected asset view. The vessel pin opens a virtual
+viewpoint above the vessel. If the browser cannot find a surface, the map
+follows your gaze until you place it. The map and VR views both run in the
+same gzweb page on port 8080 and use its live simulator connection.
 
 WebXR requires a secure context. For a tethered Quest development check, keep
 USB connected and run:

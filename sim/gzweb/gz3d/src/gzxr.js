@@ -34,6 +34,8 @@ GZ3D.WebXRView = function(scene)
   this.hiddenRoleWasVisible = true;
   this.supports = {vr: false, ar: false};
   this.sessionMode = null;
+  this.viewMode = null;
+  this.vehicleRole = null;
   this.mapScene = null;
   this.mapRoot = null;
   this.mapMarkers = [];
@@ -42,6 +44,7 @@ GZ3D.WebXRView = function(scene)
   this.hitTestSource = null;
   this.previousClearColor = null;
   this.previousClearAlpha = 1;
+  this.mapHelp = null;
 
   this.roles = [
     {
@@ -71,6 +74,11 @@ GZ3D.WebXRView = function(scene)
       link: 'base_link',
       contains: 'rover_front_camera',
       pose: [0, 0, 0, 0, 0, 0]
+    },
+    {
+      name: 'target_vessel',
+      label: 'Vessel viewpoint',
+      pose: [0, 0, 4, 0, 0.5, 0]
     },
     {
       name: 'map-ar',
@@ -274,11 +282,11 @@ GZ3D.WebXRView.prototype._updateModeButton = function()
   var isMap = this.activeRole && this.activeRole.isMap;
   this.button.textContent = isMap ? 'Enter AR map' : 'Enter VR';
   this.button.disabled = !this.activeRole ||
-      !this.supports[isMap ? 'ar' : 'vr'];
+      !(isMap ? this.supports.ar : this.supports.ar || this.supports.vr);
   this._setStatus(this.button.disabled ?
       (isMap ? 'Immersive AR is unavailable in this browser.' :
           'Immersive VR is unavailable in this browser.') :
-      (isMap ? 'Point at a table, then use the trigger to place the map.' :
+      (isMap ? 'Point at a table, then use the left trigger to place the map.' :
           'Choose a role, then enter VR.'));
 };
 
@@ -321,7 +329,9 @@ GZ3D.WebXRView.prototype._drawHud = function(title)
       this.hudCanvas.width / 2, 68, this.hudCanvas.width - 30);
   context.fillStyle = '#8fdce9';
   context.font = '27px sans-serif';
-  context.fillText('Right trigger: next | Left trigger: previous',
+  context.fillText(this.sessionMode === 'immersive-ar' ?
+      'Right trigger: AR map | Left trigger: next view' :
+      'Right trigger: next | Left trigger: previous',
       this.hudCanvas.width / 2, 116, this.hudCanvas.width - 30);
   this.hudTexture.needsUpdate = true;
 };
@@ -408,11 +418,15 @@ GZ3D.WebXRView.prototype._selectRole = function(name)
     if (this.availableRoles[i].name === name)
     {
       if (this.session && !!this.availableRoles[i].isMap !==
-          (this.sessionMode === 'immersive-ar'))
+          (this.viewMode === 'map'))
       {
         return;
       }
       this.activeRole = this.availableRoles[i];
+      if (!this.activeRole.isMap)
+      {
+        this.vehicleRole = this.activeRole.name;
+      }
       var root = this.scene.getByName(this.activeRole.name);
       this.activeAnchor = this.activeRole.isMap ? null :
           GZ3D.WebXRView.findAnchor(root, this.activeRole);
@@ -468,9 +482,10 @@ GZ3D.WebXRView.prototype.start = function()
   this.button.disabled = true;
   this._setStatus(isMap ? 'Starting tabletop map...' :
       'Starting immersive view...');
-  navigator.xr.requestSession(isMap ? 'immersive-ar' : 'immersive-vr', {
+  var mode = this.supports.ar ? 'immersive-ar' : 'immersive-vr';
+  navigator.xr.requestSession(mode, {
     requiredFeatures: ['local-floor'],
-    optionalFeatures: isMap ? ['hit-test'] : []
+    optionalFeatures: this.supports.ar ? ['hit-test'] : []
   }).then(function(session)
   {
     that._beginSession(session);
@@ -486,7 +501,8 @@ GZ3D.WebXRView.prototype._beginSession = function(session)
 {
   var that = this;
   this.session = session;
-  this.sessionMode = this.activeRole.isMap ? 'immersive-ar' : 'immersive-vr';
+  this.sessionMode = this.supports.ar ? 'immersive-ar' : 'immersive-vr';
+  this.viewMode = this.activeRole.isMap ? 'map' : 'vehicle';
   session.addEventListener('end', function()
   {
     that._endSession();
@@ -509,12 +525,14 @@ GZ3D.WebXRView.prototype._beginSession = function(session)
     that.previousSize = that.renderer.getSize();
     that.previousPixelRatio = that.renderer.getPixelRatio();
     that._resizeForLayer();
+    that.previousClearColor = that.renderer.getClearColor().clone();
+    that.previousClearAlpha = that.renderer.getClearAlpha();
     if (that.sessionMode === 'immersive-ar')
     {
-      that._prepareMap();
-      that.previousClearColor = that.renderer.getClearColor().clone();
-      that.previousClearAlpha = that.renderer.getClearAlpha();
-      that.renderer.setClearColor(0x000000, 0);
+      if (that.scene.heightmap)
+      {
+        that._prepareMap();
+      }
       if (session.requestHitTestSource)
       {
         session.requestReferenceSpace('viewer').then(function(space)
@@ -533,24 +551,48 @@ GZ3D.WebXRView.prototype._beginSession = function(session)
         }, function() {});
       }
     }
-    else
+    if (that.viewMode === 'vehicle')
     {
       that._hideActiveRole();
       that.hud.visible = true;
+      that._drawHud(that.activeRole.name);
     }
+    that._setViewClearColor();
     that.select.disabled = true;
-    that.button.textContent = that.sessionMode === 'immersive-ar' ?
-        'Exit AR map' : 'Exit VR';
+    that.button.textContent = 'Exit immersive view';
     that.button.disabled = false;
-    that._setStatus(that.sessionMode === 'immersive-ar' ?
-        'Point at a table and press a trigger to place the map.' :
+    that._setStatus(that.viewMode === 'map' ?
+        'Left trigger places or moves the map. Right trigger opens VR.' :
         'Immersive read-only view active.');
     session.addEventListener('select', function(event)
     {
-      if (that.sessionMode === 'immersive-ar')
+      if (that.sessionMode === 'immersive-ar' &&
+          event.inputSource.handedness === 'right')
       {
-        that.mapPlaced = true;
-        that._setStatus('Tabletop map placed.');
+        if (!that.mapScene && that.scene.heightmap)
+        {
+          that._prepareMap();
+        }
+        if (!that.mapScene)
+        {
+          that._setStatus('Terrain is still loading.');
+          return;
+        }
+        if (that.viewMode === 'map')
+        {
+          var hit = that._mapHit(event.frame, event.inputSource);
+          if (hit)
+          {
+            that.vehicleRole = hit;
+          }
+        }
+        that._switchView();
+      }
+      else if (that.viewMode === 'map')
+      {
+        that.mapPlaced = !that.mapPlaced;
+        that._setStatus(that.mapPlaced ? 'Tabletop map placed.' :
+            'Move the map by looking at a new spot, then press left trigger.');
       }
       else
       {
@@ -566,6 +608,77 @@ GZ3D.WebXRView.prototype._beginSession = function(session)
     that._setStatus('WebXR setup failed: ' + error.message);
     session.end();
   });
+};
+
+GZ3D.WebXRView.prototype._setViewClearColor = function()
+{
+  this.renderer.setClearColor(this.viewMode === 'map' ? 0x000000 :
+      this.previousClearColor, this.viewMode === 'map' ? 0 : 1);
+};
+
+GZ3D.WebXRView.prototype._switchView = function()
+{
+  if (this.viewMode === 'map')
+  {
+    var roles = this.availableRoles.filter(function(item)
+    {
+      return !item.isMap;
+    });
+    if (!roles.length)
+    {
+      this._setStatus('Waiting for a simulated asset viewpoint.');
+      return;
+    }
+    var role = this.vehicleRole || roles[0].name;
+    this.viewMode = 'vehicle';
+    this._selectRole(role);
+    this.hud.visible = true;
+    this._setStatus('Vehicle view. Right trigger returns to the AR map.');
+  }
+  else
+  {
+    this._restoreHiddenRole();
+    this.viewMode = 'map';
+    this._selectRole('map-ar');
+    this.hud.visible = false;
+    this._setStatus('AR map. Left trigger places or moves it.');
+  }
+  this._setViewClearColor();
+};
+
+GZ3D.WebXRView.prototype._mapHit = function(frame, inputSource)
+{
+  if (!inputSource || !inputSource.targetRaySpace)
+  {
+    return null;
+  }
+  var pose = frame.getPose(inputSource.targetRaySpace, this.referenceSpace);
+  if (!pose)
+  {
+    return null;
+  }
+  var matrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
+  var origin = new THREE.Vector3().setFromMatrixPosition(matrix);
+  var direction = new THREE.Vector3(0, 0, -1).transformDirection(matrix);
+  var ray = new THREE.Raycaster(origin, direction, 0, 5);
+  var closest = null;
+  var distance = Infinity;
+  this.mapScene.updateMatrixWorld(true);
+  for (var i = 0; i < this.mapMarkers.length; ++i)
+  {
+    var marker = this.mapMarkers[i];
+    if (!marker.object.visible)
+    {
+      continue;
+    }
+    var hits = ray.intersectObject(marker.hit, false);
+    if (hits.length && hits[0].distance < distance)
+    {
+      closest = marker.name;
+      distance = hits[0].distance;
+    }
+  }
+  return closest;
 };
 
 GZ3D.WebXRView.prototype._resizeForLayer = function()
@@ -595,6 +708,38 @@ GZ3D.WebXRView.prototype._prepareMap = function()
   this.mapScene = new THREE.Scene();
   this.mapRoot = new THREE.Group();
   this.mapScene.add(this.mapRoot);
+  var helpCanvas = document.createElement('canvas');
+  helpCanvas.width = 1024;
+  helpCanvas.height = 128;
+  var helpContext = helpCanvas.getContext('2d');
+  helpContext.fillStyle = 'rgba(10,17,20,0.88)';
+  helpContext.fillRect(0, 0, 1024, 128);
+  helpContext.fillStyle = '#dfe8ec';
+  helpContext.textAlign = 'center';
+  helpContext.font = '38px sans-serif';
+  helpContext.fillText('LEFT: place / move map    RIGHT: pin or VR',
+      512, 79, 990);
+  this.mapHelp = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 0.138),
+      new THREE.MeshBasicMaterial({
+        map: new THREE.CanvasTexture(helpCanvas), transparent: true,
+        depthTest: false, depthWrite: false
+      }));
+  this.mapHelp.matrixAutoUpdate = false;
+  this.mapHelp.renderOrder = 100000;
+  this.mapHelpOffset = new THREE.Matrix4().makeTranslation(0, -0.42, -1.1);
+  this.mapScene.add(this.mapHelp);
+  this.mapRays = [];
+  for (var r = 0; r < 2; ++r)
+  {
+    var geometry = new THREE.Geometry();
+    geometry.vertices.push(new THREE.Vector3(), new THREE.Vector3(0, 0, -2));
+    var line = new THREE.Line(geometry,
+        new THREE.LineBasicMaterial({color: r ? 0xffcc00 : 0x5bc8e0}));
+    line.visible = false;
+    this.mapScene.add(line);
+    this.mapRays.push(line);
+  }
   this.mapPlaced = false;
   var extent = 6500;
   this.scene.heightmap.traverse(function(object)
@@ -648,16 +793,22 @@ GZ3D.WebXRView.prototype._prepareMap = function()
     ctx.textAlign = 'center';
     ctx.font = 'bold 27px sans-serif';
     ctx.fillText(roles[i][0].replace('target_', ''), 128, 43, 245);
-    var label = new THREE.Sprite(new THREE.SpriteMaterial({
+    var label = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.065),
+        new THREE.MeshBasicMaterial({
       map: new THREE.CanvasTexture(canvas), transparent: true,
-      depthTest: false
+      depthTest: false, depthWrite: false, side: THREE.DoubleSide
     }));
-    label.scale.set(0.26, 0.065, 1);
     label.position.y = 0.16;
     marker.add(label);
+    var hit = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 6),
+        new THREE.MeshBasicMaterial({transparent: true, opacity: 0,
+          depthWrite: false}));
+    hit.position.y = 0.12;
+    marker.add(hit);
     marker.visible = false;
     this.mapRoot.add(marker);
-    this.mapMarkers.push({name: roles[i][0], object: marker});
+    this.mapMarkers.push({name: roles[i][0], object: marker,
+      label: label, hit: hit});
   }
 };
 
@@ -722,6 +873,7 @@ GZ3D.WebXRView.prototype._onARFrame = function(frame, pose)
 {
   this._resizeForLayer();
   this._ensureEyeCameras(pose.views.length);
+  this.viewerMatrix.fromArray(pose.transform.matrix);
   if (!this.mapPlaced)
   {
     var position = null;
@@ -743,7 +895,6 @@ GZ3D.WebXRView.prototype._onARFrame = function(frame, pose)
     }
     else
     {
-      this.viewerMatrix.fromArray(pose.transform.matrix);
       this.mapRoot.position.set(0, -0.55, -1.2)
           .applyMatrix4(this.viewerMatrix);
     }
@@ -752,6 +903,31 @@ GZ3D.WebXRView.prototype._onARFrame = function(frame, pose)
   this.scene.scene.updateMatrixWorld(true);
   this._updateMapMarkers();
   this.mapScene.updateMatrixWorld(true);
+  var head = new THREE.Vector3().setFromMatrixPosition(this.viewerMatrix);
+  for (var m = 0; m < this.mapMarkers.length; ++m)
+  {
+    var marker = this.mapMarkers[m];
+    if (marker.object.visible)
+    {
+      marker.label.lookAt(marker.object.worldToLocal(head.clone()));
+    }
+  }
+  this.mapHelp.matrix.copy(this.viewerMatrix).multiply(this.mapHelpOffset);
+  this.mapHelp.matrixWorldNeedsUpdate = true;
+  for (var rayIndex = 0; rayIndex < this.mapRays.length; ++rayIndex)
+  {
+    var source = this.session.inputSources[rayIndex];
+    var rayPose = source && source.targetRaySpace &&
+        frame.getPose(source.targetRaySpace, this.referenceSpace);
+    var line = this.mapRays[rayIndex];
+    line.visible = !!rayPose;
+    if (rayPose)
+    {
+      line.matrix.fromArray(rayPose.transform.matrix);
+      line.matrixAutoUpdate = false;
+      line.matrixWorldNeedsUpdate = true;
+    }
+  }
   for (var i = 0; i < pose.views.length; ++i)
   {
     var view = pose.views[i];
@@ -794,7 +970,7 @@ GZ3D.WebXRView.prototype._onXRFrame = function(time, frame)
   {
     return;
   }
-  if (this.sessionMode === 'immersive-ar')
+  if (this.viewMode === 'map')
   {
     this._onARFrame(frame, pose);
     return;
@@ -864,6 +1040,7 @@ GZ3D.WebXRView.prototype._endSession = function()
   }
   this.session = null;
   this.sessionMode = null;
+  this.viewMode = null;
   this.referenceSpace = null;
   this.layer = null;
   this.baseViewerInverse = null;

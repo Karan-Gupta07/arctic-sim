@@ -20,6 +20,25 @@ describe('WebXR view adapter', function() {
     expect(p.z).toBeCloseTo(-0.2, 6);
   });
 
+  it('selects a visible map pin with a controller ray', function() {
+    var view = Object.create(GZ3D.WebXRView.prototype);
+    view.referenceSpace = {};
+    view.mapScene = new THREE.Scene();
+    var marker = new THREE.Group();
+    marker.position.z = -1;
+    var hit = new THREE.Mesh(new THREE.SphereGeometry(0.075));
+    marker.add(hit);
+    view.mapScene.add(marker);
+    view.mapMarkers = [{name: 'quadcopter', object: marker, hit: hit}];
+    var frame = {getPose: function() {
+      return {transform: {matrix: new THREE.Matrix4().toArray()}};
+    }};
+
+    expect(view._mapHit(frame, {targetRaySpace: {}})).toBe('quadcopter');
+    marker.visible = false;
+    expect(view._mapHit(frame, {targetRaySpace: {}})).toBe(null);
+  });
+
   it('finds the scoped camera link without selecting a sibling', function() {
     var root = new THREE.Object3D();
     var sibling = new THREE.Object3D();
