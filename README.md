@@ -46,10 +46,12 @@ visible below; these visibility changes never affect Gazebo or other clients.
 Select **Tabletop map (AR)** and **Enter AR map** for a passthrough view of the
 live terrain. Aim at a table and press the left trigger to place it; press left
 again to move it. The controller rays show where you are pointing. Aim the
-right ray at a colored pin and press the right trigger to open that asset's
-viewpoint. Press right again to return to the map. A right trigger away from
-the pins opens the last selected asset view. The vessel pin opens a virtual
-viewpoint above the vessel. If the browser cannot find a surface, the map
+right ray at a drone or tower pin and press the right trigger to open that
+asset's viewpoint. Press right again to return to the map. A right trigger
+away from the pins opens the last selected asset view. The vessel pin stays
+on the map without a camera viewpoint. When the mission first detects the
+boat, a "Boat detected" notice appears for one second in either view. If the
+browser cannot find a surface, the map
 follows your gaze until you place it. The map and VR views both run in the
 same gzweb page on port 8080 and use its live simulator connection.
 

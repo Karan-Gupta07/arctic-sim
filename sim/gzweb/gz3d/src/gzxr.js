@@ -45,6 +45,9 @@ GZ3D.WebXRView = function(scene)
   this.previousClearColor = null;
   this.previousClearAlpha = 1;
   this.mapHelp = null;
+  this.boatNotice = false;
+  this.missionEventSeen = null;
+  this.missionPolling = false;
 
   this.roles = [
     {
@@ -76,11 +79,6 @@ GZ3D.WebXRView = function(scene)
       pose: [0, 0, 0, 0, 0, 0]
     },
     {
-      name: 'target_vessel',
-      label: 'Vessel viewpoint',
-      pose: [0, 0, 4, 0, 0.5, 0]
-    },
-    {
       name: 'map-ar',
       label: 'Tabletop map (AR)',
       isMap: true
@@ -97,6 +95,11 @@ GZ3D.WebXRView = function(scene)
   {
     that._refreshRoles();
   }, 3000);
+  this.missionTimer = window.setInterval(function()
+  {
+    that._pollMissionEvent();
+  }, 1000);
+  this._pollMissionEvent();
 };
 
 /*
@@ -322,10 +325,11 @@ GZ3D.WebXRView.prototype._drawHud = function(title)
   context.lineWidth = 5;
   context.strokeRect(3, 3, this.hudCanvas.width - 6,
       this.hudCanvas.height - 6);
-  context.fillStyle = '#dfe8ec';
+  context.fillStyle = this.boatNotice ? '#ffcc00' : '#dfe8ec';
   context.textAlign = 'center';
   context.font = '600 42px sans-serif';
-  context.fillText(title + ' - READ ONLY',
+  context.fillText(this.boatNotice ? 'BOAT DETECTED' :
+      title + ' - READ ONLY',
       this.hudCanvas.width / 2, 68, this.hudCanvas.width - 30);
   context.fillStyle = '#8fdce9';
   context.font = '27px sans-serif';
@@ -339,6 +343,56 @@ GZ3D.WebXRView.prototype._drawHud = function(title)
 GZ3D.WebXRView.prototype._setStatus = function(message)
 {
   this.status.textContent = message;
+};
+
+GZ3D.WebXRView.prototype._pollMissionEvent = function()
+{
+  if (this.missionPolling || !window.fetch)
+  {
+    return;
+  }
+  this.missionPolling = true;
+  var that = this;
+  var url = window.location.protocol + '//' + window.location.hostname +
+      ':8090/api/mission-event';
+  window.fetch(url, {cache: 'no-store'}).then(function(response)
+  {
+    return response.json();
+  }).then(function(data)
+  {
+    that.missionPolling = false;
+    var when = Number(data.boat_detected_at) || 0;
+    if (that.missionEventSeen !== null && when > that.missionEventSeen)
+    {
+      that._showBoatNotice();
+    }
+    that.missionEventSeen = when;
+  }, function()
+  {
+    that.missionPolling = false;
+  });
+};
+
+GZ3D.WebXRView.prototype._showBoatNotice = function()
+{
+  var that = this;
+  var oldStatus = this.status.textContent;
+  this.boatNotice = true;
+  this._setStatus('Boat detected');
+  this._drawHud(this.activeRole ? this.activeRole.name :
+      'Waiting for a vehicle');
+  this._drawMapHelp();
+  window.setTimeout(function()
+  {
+    that.boatNotice = false;
+    that._drawHud(that.activeRole ? that.activeRole.name :
+        'Waiting for a vehicle');
+    that._drawMapHelp();
+    if (that.status.textContent === 'Boat detected')
+    {
+      that._setStatus(oldStatus);
+    }
+  }, 1000);
 };
 
 GZ3D.WebXRView.prototype._refreshRoles = function()
@@ -581,6 +635,10 @@ GZ3D.WebXRView.prototype._beginSession = function(session)
         if (that.viewMode === 'map')
         {
           var hit = that._mapHit(event.frame, event.inputSource);
+          if (hit === 'target_vessel')
+          {
+            return;
+          }
           if (hit)
           {
             that.vehicleRole = hit;
@@ -698,6 +756,25 @@ GZ3D.WebXRView.prototype._resizeForLayer = function()
       this.framebufferWidth, this.framebufferHeight, 1);
 };
 
+GZ3D.WebXRView.prototype._drawMapHelp = function()
+{
+  if (!this.mapHelpCanvas)
+  {
+    return;
+  }
+  var context = this.mapHelpCanvas.getContext('2d');
+  context.clearRect(0, 0, 1024, 128);
+  context.fillStyle = 'rgba(10,17,20,0.88)';
+  context.fillRect(0, 0, 1024, 128);
+  context.fillStyle = this.boatNotice ? '#ffcc00' : '#dfe8ec';
+  context.textAlign = 'center';
+  context.font = this.boatNotice ? 'bold 52px sans-serif' :
+      '38px sans-serif';
+  context.fillText(this.boatNotice ? 'BOAT DETECTED' :
+      'LEFT: place / move    RIGHT: camera pins / VR', 512, 79, 990);
+  this.mapHelpTexture.needsUpdate = true;
+};
+
 /* Reuse gzweb's loaded terrain mesh; markers read the same live model poses. */
 GZ3D.WebXRView.prototype._prepareMap = function()
 {
@@ -708,27 +785,21 @@ GZ3D.WebXRView.prototype._prepareMap = function()
   this.mapScene = new THREE.Scene();
   this.mapRoot = new THREE.Group();
   this.mapScene.add(this.mapRoot);
-  var helpCanvas = document.createElement('canvas');
-  helpCanvas.width = 1024;
-  helpCanvas.height = 128;
-  var helpContext = helpCanvas.getContext('2d');
-  helpContext.fillStyle = 'rgba(10,17,20,0.88)';
-  helpContext.fillRect(0, 0, 1024, 128);
-  helpContext.fillStyle = '#dfe8ec';
-  helpContext.textAlign = 'center';
-  helpContext.font = '38px sans-serif';
-  helpContext.fillText('LEFT: place / move map    RIGHT: pin or VR',
-      512, 79, 990);
+  this.mapHelpCanvas = document.createElement('canvas');
+  this.mapHelpCanvas.width = 1024;
+  this.mapHelpCanvas.height = 128;
+  this.mapHelpTexture = new THREE.CanvasTexture(this.mapHelpCanvas);
   this.mapHelp = new THREE.Mesh(
       new THREE.PlaneGeometry(1.1, 0.138),
       new THREE.MeshBasicMaterial({
-        map: new THREE.CanvasTexture(helpCanvas), transparent: true,
+        map: this.mapHelpTexture, transparent: true,
         depthTest: false, depthWrite: false
       }));
   this.mapHelp.matrixAutoUpdate = false;
   this.mapHelp.renderOrder = 100000;
   this.mapHelpOffset = new THREE.Matrix4().makeTranslation(0, -0.42, -1.1);
   this.mapScene.add(this.mapHelp);
+  this._drawMapHelp();
   this.mapRays = [];
   for (var r = 0; r < 2; ++r)
   {

@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 GAZEBO_IP = os.environ.get("GAZEBO_IP", "10.23.0.5")
@@ -41,6 +42,7 @@ EDITABLE = {
 
 _busy = threading.Lock()
 _status = {"state": "idle", "detail": ""}
+_mission_event = {"boat_detected_at": 0}
 
 
 def run(cmd: list[str], timeout: int = 900) -> tuple[int, str]:
@@ -1095,6 +1097,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(asset_roster()))
         if path == "/api/status":
             return self._send(200, json.dumps(_status))
+        if path == "/api/mission-event":
+            return self._send(200, json.dumps(_mission_event))
         if path == "/api/logs":
             m = re.search(r"tail=(\d+)", self.path)
             tail = m.group(1) if m else "300"
@@ -1122,6 +1126,11 @@ class Handler(BaseHTTPRequestHandler):
             ok, detail = write_env(payload.get("env", ""))
             return self._send(200 if ok else 400,
                               json.dumps({"ok": ok, "error": None if ok else detail}))
+        if path == "/api/mission-event":
+            if payload.get("type") != "boat_detected":
+                return self._send(400, json.dumps({"error": "unknown event"}))
+            _mission_event["boat_detected_at"] = time.time()
+            return self._send(200, json.dumps(_mission_event))
         if path == "/api/reset":
             if _busy.locked():
                 return self._send(409, json.dumps({"ok": False, "error": "busy"}))
